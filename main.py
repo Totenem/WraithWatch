@@ -1,92 +1,179 @@
-import asyncio
-import httpx
-from bs4 import BeautifulSoup
+# ==================================================
+# Application: WraithWatch
+# Description: A discord bot that scrapes reddit (r/privacy, r/hacking, r/netsec, r/scams, r/socialengineering) 
+# for posts that contain certain keywords.
+# Author: @totenem
+# Version: 1.0.0
+# ==================================================
+import discord 
+from discord.ext import commands
 import json
+from groq import Groq
+from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 import time
-from fastapi import FastAPI
+import os
+import requests
+from discord import app_commands
+
+load_dotenv()
+
+discord_token = os.getenv("DISCORD_BOT_TOKEN")
+groq_key = os.getenv("GROQ_API_KEY")
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 system_headers = {
     "User-Agent": "Mozilla/5.0"
 }
 
-subreddits = ["privacy", "hacking", "netsec", "scams", "socialengineering"]
+client = Groq(
+    api_key=groq_key
+)
 
+# Custom button class to handle clicks
+class PostSelectView(discord.ui.View):
+    def __init__(self, posts):
+        super().__init__(timeout=60)
+        self.posts = posts
+        for i in range(len(posts)):
+            self.add_item(PostButton(label=str(i + 1), index=i))
 
-app = FastAPI()
+class PostButton(discord.ui.Button):
+    def __init__(self, label, index):
+        super().__init__(label=label, style=discord.ButtonStyle.primary)
+        self.index = index
 
-@app.get("/")
-async def root():
-    return {
-        "App": "WraithWatch", 
-        "Version": "0.0.1",
-        "Author": "Michael Ygana (Totem)"
-        }
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+            await self.ai_summary(interaction)
+        except Exception as e:
+            print(f"Error in button callback: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ An error occurred while generating the summary.", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ An error occurred while generating the summary.", ephemeral=True)
 
-#Get Hot posts from subreddits
-@app.get("/get_hot_posts")
-async def getHotPosts():
-    scraped_results = []
+    async def ai_summary(self, interaction: discord.Interaction):
+        try:
+            post = self.view.posts[self.index]
+            response = client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that summarizes reddit posts."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Please summarize the following reddit post: {post['url']}. The summary should be concise and to the point. If its story summarize on what happened. If its an experience ofa comapny or someone, add tips on how to avoid it. make  it 5-10 sentences with proper spacing and paragraphs. Only return the summary, no other text. "
+                    }
+                ],
+                model="llama-3.1-8b-instant",
+                max_tokens=1000
+            )
+            summary = response.choices[0].message.content
+            await interaction.followup.send(
+                f"🧠 AI Summary: \n{summary}\nURL: {post['url']}", 
+                ephemeral=True
+            )
+        except Exception as e:
+            print(f"Error in AI summary: {e}")
+            await interaction.followup.send("❌ Failed to generate AI summary for this post.", ephemeral=True)
 
+@bot.event
+async def on_ready():
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Synced {len(synced)} slash command(s)")
+        print(f"✅ Bot is ready! Logged in as {bot.user}")
+    except Exception as e:
+        print(f"❌ Error syncing commands: {e}")
 
-    async with httpx.AsyncClient(timeout=10, headers=system_headers) as client:
-        for subreddit in subreddits:
-            url = f"https://old.reddit.com/r/{subreddit}/hot/" # we are using old reddit and filtering them on hot posts
-            response = await client.get(url)
-            if response.status_code != 200:
-                return {"error": f"Failed to fetch data from r/{subreddit}"}
-                continue
-        
-            soup = BeautifulSoup(response.text, "html.parser")
-            # getiing basic posts details first
-            posts = soup.find_all("div", {"class": "thing"})
-            post_count = 0
+@bot.command()
+async def hello(ctx):
+    await ctx.send("Hello!")
 
-            for post in posts:
-                if post_count >= 5:
-                    print(f"Done fetching posts from r/{subreddit}")
-                    break
+#commamd to check ping
+@bot.tree.command(name="ping", description="Check the bot's latency")
+async def ping(interaction: discord.Interaction):
+    try:
+        latency = round(bot.latency * 1000)
+        await interaction.response.send_message(f"🏓 Pong! Latency: {latency}ms")
+    except Exception as e:
+        print(f"Error in ping command: {e}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ An error occurred while processing the command.")
 
-                post_title = post.find("a", {"class": "title"}) # get the post title
-                flair = post.find("span", {"class": "linkflairlabel"}) # get the flair (i'll use this for filtering laters)
+#command to scrape 5 latest posts in a specific subreddit
+@bot.tree.command(name="latest", description="Scrape 5 latest posts in a specific subreddit")
+@app_commands.choices(
+    subreddit=[
+        app_commands.Choice(name="privacy", value="privacy"),
+        app_commands.Choice(name="hacking", value="hacking"),
+        app_commands.Choice(name="netsec", value="netsec"),
+        app_commands.Choice(name="scams", value="scams"),
+        # app_commands.Choice(name="socialengineering", value="socialengineering")
+    ]
+)
+async def scrape(interaction: discord.Interaction, subreddit: app_commands.Choice[str]):
+    post_count = 0
+    posts = []
+    try:
+        await interaction.response.defer()
+        subredit_url = f"https://old.reddit.com/r/{subreddit.value}/rising/"
+        response = requests.get(subredit_url, headers=system_headers)
 
-                if post_title:
-                    title = post_title.text.strip()
-                    post_url = post_title["href"]
+        if response.status_code != 200:
+            await interaction.followup.send("❌ Failed to fetch data from the subreddit.")
+            return
 
-                    # skip links that are not actual post URLs (e.g. user profiles, external links, etc.)
-                    if not post_url.startswith("/r/"):
-                        continue
-                    
-                    post_url = "https://old.reddit.com" + post_url  # convert relative URL to full URL
+        soup = BeautifulSoup(response.text, "html.parser")
+        posts_scraped = soup.find_all("div", {"class": "thing"})
 
-                    flair = flair.text.strip() if flair else "No Flair"
+        for post in posts_scraped:
+            if post_count >= 5:
+                break
 
-                    # get the post content
-                    post_response = await client.get(post_url)
-                    post_soup = BeautifulSoup(post_response.text, "html.parser")
-                    
-                    # scope only the actual post area and exclude comment bodies
-                    site_table = post_soup.find("div", id="siteTable")
-                    if site_table:
-                        usertexts = site_table.find_all("div", class_="usertext-body")
-                        if len(usertexts) >= 1:
-                            body_text = usertexts[0].text.strip()
-                        else:
-                            continue  # skip this post if there's no body
-                    else:
-                        continue  # skip this post if siteTable is not found
+            post_title = post.find("a", {"class": "title"})
+            flair = post.find("span", {"class": "linkflairlabel"})
+            if post_title and flair:
+                title = post_title.text.strip()
+                post_url = post_title["href"]
 
-                    if not body_text:
-                        continue  # filter out empty body posts
-                    
-                    scraped_results.append({
-                        "title": title,
-                        "url": post_url,
-                        "flair": flair,
-                        "body": body_text
-                    })
-                
+                if not post_url.startswith("/r/"):
+                    continue
+
+                post_data = {
+                    "title": title,
+                    "url": f"https://old.reddit.com{post_url}",
+                    "flair": flair.text.strip()
+                }
+
+                posts.append(post_data)
                 post_count += 1
 
-    return {"Status": "Success", "Results": scraped_results}
-                    
+        if posts:
+            embed = discord.Embed(
+                title=f"📬 Latest posts from r/{subreddit.value}",
+                color=discord.Color.blue()
+            )
+            for i, post in enumerate(posts):
+                embed.add_field(
+                    name=f"{i + 1}. {post['title']}",
+                    value=f"**Flair:** {post['flair']}\n🔗 [Link]({post['url']})",
+                    inline=False
+                )
+            view = PostSelectView(posts)
+            await interaction.followup.send(embed=embed, view=view)
+        else:
+            await interaction.followup.send("❌ No posts found in the subreddit.")
+    except Exception as e:
+        print(f"Error in scrape command: {e}")
+        await interaction.followup.send("❌ An error occurred while processing the command.")
+
+bot.run(discord_token)
+    
