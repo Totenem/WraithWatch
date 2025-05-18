@@ -7,9 +7,7 @@ A Discord bot for real-time privacy & security threat detection, powered by AI. 
 - **Real-time Monitoring**: Tracks posts from key security & privacy subreddits
   - r/privacy
   - r/hacking
-  - r/netsec
   - r/scams
-  - r/socialengineering
 
 - **AI-Powered Analysis**: Leverages Groq's LLaMA3 model for:
   - 📝 Concise summaries of complex incidents
