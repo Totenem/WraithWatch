@@ -19,8 +19,8 @@ A Discord bot for real-time privacy & security threat detection, powered by AI. 
 
 - **Discord Integration**: Seamless interaction through slash commands
   - `/latest` - View recent incidents from a subreddit
+  - `/ask` - ask a sepefic question to be answered by our AI assistant
   - `/ping` - Check bot latency
-  - More commands coming soon!
 
 ## 🛠️ Tech Stack
 
